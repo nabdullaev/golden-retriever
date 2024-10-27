@@ -24,7 +24,7 @@ def search_duckduckgo(query):
         "Accept-Language": "en-US,en;q=0.5"
     }
     response = requests.get(url, headers=headers)
-    
+
     if response.status_code == 200:
         soup = BeautifulSoup(response.text, 'html.parser')
         results = []
@@ -34,10 +34,9 @@ def search_duckduckgo(query):
             results.append({'title': title, 'link': link})
         return results
     else:
-        print(f"Failed to retrieve search results: {response.status_code}")
         return []
-
-
+    
+    
 def scrape_page_content(url):
     """
     Retrieves the textual content from a given webpage.
@@ -47,14 +46,18 @@ def scrape_page_content(url):
         "Referer": url,
         "Accept-Language": "en-US,en;q=0.5"
     }
-    response = requests.get(url, headers=headers)
     
-    if response.status_code == 200:
-        soup = BeautifulSoup(response.text, 'html.parser')
-        paragraphs = soup.find_all('p')
-        return ' '.join([para.text for para in paragraphs])
-    else:
-        print(f"Failed to retrieve page content: {response.status_code}")
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            paragraphs = soup.find_all('p')
+            return ' '.join([para.text for para in paragraphs])
+        else:
+            return None
+    
+    except requests.exceptions.RequestException as e:
         return None
 
 
@@ -67,31 +70,42 @@ def clean_text(text):
     return text.strip()
 
 
-def summarize_text(text):
+def chunk_text(text, chunk_size=500):
     """
-    Summarizes the input text using a pre-trained summarization model.
+    Splits the input text into chunks of approximately `chunk_size` words.
     """
-    tokens = tokenizer(text, return_tensors="pt").input_ids
-    max_token_length = tokenizer.model_max_length
-    input_length = len(tokens[0])
-    
-    if input_length > max_token_length:
-        print(f"Input too long: {input_length} tokens (max: {max_token_length}), truncating...")
-        text = tokenizer.decode(tokens[0][:max_token_length], skip_special_tokens=True)
-    
-    try:
-        max_length = min(input_length // 2, 150)
-        min_length = min(input_length // 4, 30)
-        
-        if input_length < 10:
-            return text  # Skip summarization if input is too short
+    words = text.split()
+    return [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
 
-        summary = summarizer(text, max_length=max_length, min_length=min_length, do_sample=False)
-        return summary[0]['summary_text']
+def summarize_text(text, chunk_size=500):
+    """
+    Summarizes the input text in chunks to handle large inputs.
+    Limits the final summary to approximately 20 sentences or 200 words.
+    """
+    # Step 1: Split text into chunks to fit within model's max length
+    chunks = chunk_text(text, chunk_size=chunk_size)
+    chunk_summaries = []
     
-    except Exception as e:
-        print(f"Error during summarization: {e}")
-        return text
+    # Step 2: Summarize each chunk individually
+    for chunk in chunks:
+        try:
+            tokens = tokenizer(chunk, return_tensors="pt").input_ids
+            input_length = len(tokens[0])
+
+            # Dynamically set max_length and min_length for each chunk
+            max_length = min(200, max(input_length // 2, 50))  
+            min_length = min(max_length // 2, 30)              
+            
+            # Generate summary for the chunk
+            summary = summarizer(chunk, max_length=max_length, min_length=min_length, do_sample=False)
+            chunk_summaries.append(summary[0]['summary_text'])
+        
+        except Exception as e:
+            chunk_summaries.append(chunk)  # Fallback: use original chunk if summarization fails
+    
+    # Step 3: Combine summaries of chunks
+    combined_summary = ' '.join(chunk_summaries)
+    return combined_summary
 
 
 def extract_keywords(text):
@@ -121,9 +135,10 @@ def main():
                 cleaned_content = clean_text(content)
                 scraped_contents.append(cleaned_content)
         
-        # Summarize the scraped content
+        # Summarize each scraped content using the chunked summarization
         summaries = [summarize_text(content) for content in scraped_contents]
 
+        # Print each summary
         for i, summary in enumerate(summaries):
             print(f"Summary {i + 1}:\n{summary}\n")
     else:
